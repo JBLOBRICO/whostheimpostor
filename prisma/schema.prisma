@@ -1,0 +1,380 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  password      String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Profile
+  username      String    @unique @default(cuid())
+  displayName   String    @default("Player")
+  level         Int       @default(1)
+  xp            Int       @default(0)
+  coins         Int       @default(100)
+  
+  // Equipped cosmetics
+  equippedAvatar    String  @default("default")
+  equippedBorder    String  @default("none")
+  equippedTitle     String  @default("Newcomer")
+  equippedEmote     String  @default("wave")
+  equippedVoteEffect String @default("default")
+  
+  // Stats
+  totalGames        Int     @default(0)
+  gamesWon          Int     @default(0)
+  timesImpostor     Int     @default(0)
+  impostorWins      Int     @default(0)
+  correctGuesses    Int     @default(0)
+  totalVotesReceived Int    @default(0)
+  
+  // Daily rewards
+  lastDailyReward   DateTime?
+  loginStreak       Int     @default(0)
+  
+  // Relations
+  accounts          Account[]
+  sessions          Session[]
+  roomPlayers       RoomPlayer[]
+  gamePlayers       GamePlayer[]
+  sentMessages      Message[]
+  achievements      UserAchievement[]
+  ownedCosmetics    UserCosmetic[]
+  weeklyMissions    UserMission[]
+
+  @@map("users")
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+model Room {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  hostId      String
+  name        String   @default("Game Room")
+  status      String   @default("lobby") // lobby, playing, finished
+  gameMode    String   @default("classic") // classic, chaos, ranked, custom
+  maxPlayers  Int      @default(8)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  // Settings
+  discussionTime    Int     @default(120)
+  votingTime        Int     @default(60)
+  numImpostors      Int     @default(1)
+  anonymousVoting   Boolean @default(false)
+  enableAbilities   Boolean @default(true)
+  enableTwists      Boolean @default(true)
+  enabledTwists     String  @default("[]") // JSON array of enabled twist names
+  
+  // Current game reference
+  currentGameId String?
+  
+  players     RoomPlayer[]
+  games       Game[]
+  messages    Message[]
+
+  @@map("rooms")
+}
+
+model RoomPlayer {
+  id        String   @id @default(cuid())
+  roomId    String
+  userId    String
+  isHost    Boolean  @default(false)
+  isReady   Boolean  @default(false)
+  joinedAt  DateTime @default(now())
+  
+  room      Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([roomId, userId])
+  @@map("room_players")
+}
+
+model Game {
+  id          String   @id @default(cuid())
+  roomId      String
+  roundNumber Int      @default(1)
+  status      String   @default("assigning") // assigning, discussion, voting, revealing, finished
+  
+  // Round data
+  secretWord      String?
+  category        String?
+  activeTwist     String?
+  twistData       String  @default("{}") // JSON
+  dailyEventId    String?
+  
+  startedAt   DateTime @default(now())
+  discussionStartedAt DateTime?
+  votingStartedAt    DateTime?
+  revealedAt         DateTime?
+  finishedAt         DateTime?
+  
+  room        Room         @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  players     GamePlayer[]
+  votes       Vote[]
+  roundStats  RoundStat[]
+
+  @@map("games")
+}
+
+model GamePlayer {
+  id          String   @id @default(cuid())
+  gameId      String
+  userId      String
+  
+  // Role
+  role        String   @default("innocent") // innocent, impostor, double_agent
+  wordShown   String?  // What word was shown to this player
+  ability     String?  // Ability card assigned
+  abilityUsed Boolean  @default(false)
+  abilityTarget String?
+  
+  // Swap twist
+  originalRole String?
+  swappedWith   String?
+  
+  // Status
+  isEliminated  Boolean @default(false)
+  speakingOrder Int?
+  
+  // Performance
+  xpEarned   Int @default(0)
+  coinsEarned Int @default(0)
+  
+  game        Game   @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  user        User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  votesReceived Vote[] @relation("VoteTarget")
+  votesCast     Vote[] @relation("VoteCaster")
+
+  @@unique([gameId, userId])
+  @@map("game_players")
+}
+
+model Vote {
+  id         String   @id @default(cuid())
+  gameId     String
+  casterId   String   // GamePlayer ID
+  targetId   String?  // GamePlayer ID (null = skip)
+  isDouble   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  
+  game       Game       @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  caster     GamePlayer @relation("VoteCaster", fields: [casterId], references: [id], onDelete: Cascade)
+  target     GamePlayer? @relation("VoteTarget", fields: [targetId], references: [id], onDelete: Cascade)
+
+  @@map("votes")
+}
+
+model RoundStat {
+  id          String @id @default(cuid())
+  gameId      String
+  statType    String // most_suspicious, biggest_liar, etc.
+  playerId    String
+  value       String @default("{}")
+  
+  game        Game   @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@map("round_stats")
+}
+
+model Message {
+  id        String   @id @default(cuid())
+  roomId    String
+  userId    String
+  content   String
+  type      String   @default("text") // text, emoji, system, quick_chat
+  createdAt DateTime @default(now())
+  
+  room      Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("messages")
+}
+
+model Achievement {
+  id          String @id @default(cuid())
+  key         String @unique
+  name        String
+  description String
+  icon        String @default("trophy")
+  category    String @default("general")
+  xpReward    Int    @default(50)
+  coinReward  Int    @default(25)
+  
+  users       UserAchievement[]
+
+  @@map("achievements")
+}
+
+model UserAchievement {
+  id            String   @id @default(cuid())
+  userId        String
+  achievementId String
+  unlockedAt    DateTime @default(now())
+  
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  achievement   Achievement @relation(fields: [achievementId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, achievementId])
+  @@map("user_achievements")
+}
+
+model Cosmetic {
+  id          String  @id @default(cuid())
+  key         String  @unique
+  name        String
+  description String  @default("")
+  type        String  // avatar, border, title, emote, vote_effect, lobby_effect
+  rarity      String  @default("common") // common, rare, epic, legendary
+  coinCost    Int     @default(100)
+  levelRequired Int   @default(1)
+  preview     String  @default("") // emoji or color class
+  
+  owners      UserCosmetic[]
+
+  @@map("cosmetics")
+}
+
+model UserCosmetic {
+  id          String   @id @default(cuid())
+  userId      String
+  cosmeticId  String
+  unlockedAt  DateTime @default(now())
+  
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  cosmetic    Cosmetic @relation(fields: [cosmeticId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, cosmeticId])
+  @@map("user_cosmetics")
+}
+
+model Mission {
+  id          String @id @default(cuid())
+  key         String @unique
+  name        String
+  description String
+  type        String @default("weekly") // daily, weekly, seasonal
+  goalType    String // games_played, impostor_wins, correct_guesses, etc.
+  goalAmount  Int
+  xpReward    Int    @default(100)
+  coinReward  Int    @default(50)
+  
+  users       UserMission[]
+
+  @@map("missions")
+}
+
+model UserMission {
+  id        String   @id @default(cuid())
+  userId    String
+  missionId String
+  progress  Int      @default(0)
+  completed Boolean  @default(false)
+  completedAt DateTime?
+  expiresAt DateTime
+  
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mission   Mission @relation(fields: [missionId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, missionId, expiresAt])
+  @@map("user_missions")
+}
+
+model DailyEvent {
+  id          String   @id @default(cuid())
+  date        String   @unique // YYYY-MM-DD
+  eventType   String   // double_xp, double_coins, reverse_voting, mystery_words, fast_discussion, hidden_categories
+  name        String
+  description String
+  multiplier  Float    @default(1.0)
+  active      Boolean  @default(true)
+
+  @@map("daily_events")
+}
+
+model WordDatabase {
+  id       String @id @default(cuid())
+  word     String
+  category String
+  difficulty String @default("medium")
+  language String   @default("en")
+
+  @@unique([word, category])
+  @@map("word_database")
+}
+
+model RankedSeason {
+  id        String   @id @default(cuid())
+  name      String
+  startDate DateTime
+  endDate   DateTime
+  active    Boolean  @default(true)
+  
+  rankings  PlayerRanking[]
+
+  @@map("ranked_seasons")
+}
+
+model PlayerRanking {
+  id        String @id @default(cuid())
+  seasonId  String
+  userId    String
+  rank      String @default("bronze") // bronze, silver, gold, platinum, diamond, master
+  points    Int    @default(0)
+  wins      Int    @default(0)
+  losses    Int    @default(0)
+  
+  season    RankedSeason @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+
+  @@unique([seasonId, userId])
+  @@map("player_rankings")
+}
