@@ -351,12 +351,13 @@ export function DashboardClient({ user, recentAchievements, dailyEvent }: Dashbo
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.3 }}
-              className="grid grid-cols-3 gap-3"
+              className="grid grid-cols-4 gap-3"
             >
               {[
                 { label: "Profile", icon: <User className="w-5 h-5" />, path: "/profile", color: "text-purple-400" },
                 { label: "Shop", icon: <Crown className="w-5 h-5" />, path: "/shop", color: "text-yellow-400" },
                 { label: "Leaderboard", icon: <Star className="w-5 h-5" />, path: "/leaderboard", color: "text-pink-400" },
+                { label: "How to Play", icon: <span className="text-lg">📖</span>, path: "/how-to-play", color: "text-cyan-400" },
               ].map((action) => (
                 <Card
                   key={action.label}

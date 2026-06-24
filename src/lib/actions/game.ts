@@ -4,7 +4,7 @@ import { db } from "@/lib/db";
 import { auth } from "@/lib/auth";
 import { setupGame, calculateVotes, calculateXPRewards } from "@/lib/game-engine";
 import { TwistType } from "@/types/game";
-import { calculateLevelFromXP } from "@/lib/utils";
+import { calculateLevelFromXP, shuffleArray } from "@/lib/utils";
 
 export async function startGame(roomId: string) {
   const session = await auth();
@@ -13,7 +13,7 @@ export async function startGame(roomId: string) {
   const room = await db.room.findUnique({
     where: { id: roomId },
     include: {
-      players: { include: { user: true } },
+      players: { include: { user: true }, orderBy: { joinedAt: "asc" } },
       _count: { select: { players: true } },
     },
   });
@@ -36,6 +36,9 @@ export async function startGame(roomId: string) {
     enabledTwists?.length ? enabledTwists : undefined
   );
 
+  // Assign speaking order — shuffled so it's random each round
+  const speakingOrder = shuffleArray(playerIds);
+
   const today = new Date().toISOString().slice(0, 10);
   const dailyEvent = await db.dailyEvent.findUnique({ where: { date: today } });
 
@@ -56,6 +59,7 @@ export async function startGame(roomId: string) {
             role: a.role,
             wordShown: a.wordShown ?? null,
             ability: a.ability ?? null,
+            speakingOrder: speakingOrder.indexOf(a.userId),
           })),
         },
       },
@@ -105,11 +109,7 @@ export async function startVoting(gameId: string) {
   });
 
   if (!game) return { error: "Game not found" };
-
-  // FIX: only host can manually advance to voting
-  if (game.room.hostId !== session.user.id) {
-    return { error: "Only the host can start voting" };
-  }
+  if (game.room.hostId !== session.user.id) return { error: "Only the host can start voting" };
   if (game.status !== "discussion") return { error: "Cannot start voting now" };
 
   await db.game.update({
@@ -149,8 +149,6 @@ export async function castVote(gameId: string, targetUserId: string | null) {
     targetGamePlayerId = targetPlayer.id;
   }
 
-  // FIX: double_vote is auto-applied implicitly — don't show it in AbilityCard
-  // The ability is consumed here, not via useAbility
   const isDouble = caster.ability === "double_vote" && !caster.abilityUsed;
 
   await db.vote.create({
@@ -164,16 +162,11 @@ export async function castVote(gameId: string, targetUserId: string | null) {
     });
   }
 
-  await db.room.update({
-    where: { id: game.roomId },
-    data: { updatedAt: new Date() },
-  });
+  await db.room.update({ where: { id: game.roomId }, data: { updatedAt: new Date() } });
 
-  // FIX: count weighted votes to decide if everyone has voted
+  // Check if all active players have voted
   const allVotes = await db.vote.findMany({ where: { gameId } });
   const activePlayers = game.players.filter((p) => !p.isEliminated);
-
-  // Each active player must have cast exactly one vote row
   const voterIds = new Set(allVotes.map((v) => v.casterId));
   const allVoted = activePlayers.every((p) => voterIds.has(p.id));
 
@@ -184,7 +177,6 @@ export async function castVote(gameId: string, targetUserId: string | null) {
   return { success: true };
 }
 
-// Internal reveal — no auth needed (called by castVote)
 async function _revealResults(gameId: string) {
   const game = await db.game.findUnique({
     where: { id: gameId },
@@ -221,8 +213,6 @@ async function _revealResults(gameId: string) {
   const impostors = game.players.filter(
     (p) => p.role === "impostor" || p.role === "double_agent"
   );
-
-  // FIX: compute remaining counts correctly based on who just got eliminated
   const eliminatedUserId = eliminatedPlayer?.userId;
   const remainingImpostors = impostors.filter(
     (i) => i.userId !== eliminatedUserId && !i.isEliminated
@@ -230,7 +220,6 @@ async function _revealResults(gameId: string) {
   const remainingInnocents = game.players.filter(
     (p) => p.role === "innocent" && p.userId !== eliminatedUserId && !p.isEliminated
   );
-
   const impostorsWin = remainingImpostors.length >= remainingInnocents.length;
 
   const dailyEvent = game.dailyEventId
@@ -253,23 +242,18 @@ async function _revealResults(gameId: string) {
   for (const reward of playerRewards) {
     const user = await db.user.findUnique({ where: { id: reward.userId } });
     if (!user) continue;
-
     const newXP = user.xp + reward.xp;
     const { level } = calculateLevelFromXP(newXP);
     const gp = game.players.find((p) => p.userId === reward.userId);
     const isImpostor = gp?.role === "impostor" || gp?.role === "double_agent";
     const won = (isImpostor && impostorsWin) || (!isImpostor && !impostorsWin);
     const madeCorrectGuess =
-      !isImpostor &&
-      eliminatedPlayer &&
-      impostors.some((i) => i.id === eliminatedPlayer.id);
+      !isImpostor && eliminatedPlayer && impostors.some((i) => i.id === eliminatedPlayer.id);
 
     await db.user.update({
       where: { id: reward.userId },
       data: {
-        xp: newXP,
-        coins: { increment: reward.coins },
-        level,
+        xp: newXP, coins: { increment: reward.coins }, level,
         totalGames: { increment: 1 },
         ...(won ? { gamesWon: { increment: 1 } } : {}),
         ...(isImpostor ? { timesImpostor: { increment: 1 } } : {}),
@@ -284,7 +268,7 @@ async function _revealResults(gameId: string) {
     });
   }
 
-  // Clean up old messages (keep last 100)
+  // Clean up old messages
   const msgCount = await db.message.count({ where: { roomId: game.roomId } });
   if (msgCount > 100) {
     const oldest = await db.message.findMany({
@@ -307,18 +291,12 @@ async function _revealResults(gameId: string) {
   });
 }
 
-// FIX: revealResults is now auth-guarded (host-only public version)
 export async function revealResults(gameId: string) {
   const session = await auth();
   if (!session?.user?.id) return { error: "Not authenticated" };
-
-  const game = await db.game.findUnique({
-    where: { id: gameId },
-    include: { room: true },
-  });
+  const game = await db.game.findUnique({ where: { id: gameId }, include: { room: true } });
   if (!game) return { error: "Game not found" };
   if (game.room.hostId !== session.user.id) return { error: "Only host can reveal results" };
-
   await _revealResults(gameId);
   return { success: true };
 }
@@ -348,11 +326,7 @@ export async function finishGame(gameId: string) {
   return { success: true };
 }
 
-export async function useAbility(
-  gameId: string,
-  abilityType: string,
-  targetUserId?: string
-) {
+export async function useAbility(gameId: string, abilityType: string, targetUserId?: string) {
   const session = await auth();
   if (!session?.user?.id) return { error: "Not authenticated" };
 
@@ -370,8 +344,6 @@ export async function useAbility(
   if (!caster) return { error: "Not in this game" };
   if (caster.abilityUsed) return { error: "Ability already used" };
   if (caster.ability !== abilityType) return { error: "You don't have this ability" };
-
-  // FIX: double_vote is handled automatically in castVote — block manual use
   if (abilityType === "double_vote") {
     return { error: "Double Vote activates automatically when you cast your vote" };
   }
@@ -381,10 +353,6 @@ export async function useAbility(
     data: { abilityUsed: true, abilityTarget: targetUserId ?? null },
   });
 
-  await db.room.update({
-    where: { id: game.roomId },
-    data: { updatedAt: new Date() },
-  });
-
+  await db.room.update({ where: { id: game.roomId }, data: { updatedAt: new Date() } });
   return { success: true };
 }
