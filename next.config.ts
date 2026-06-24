@@ -1,11 +1,14 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  experimental: {
-    serverActions: {
-      allowedOrigins: ["*"],
-    },
+  // Server Actions are stable in Next.js 15 — no extra config needed
+  experimental: {},
+
+  // Required for Prisma on Vercel serverless
+  outputFileTracingIncludes: {
+    "/*": ["./node_modules/.prisma/**/*", "./prisma/schema.prisma"],
   },
+
   images: {
     remotePatterns: [
       {
@@ -13,6 +16,25 @@ const nextConfig: NextConfig = {
         hostname: "**",
       },
     ],
+  },
+
+  // Security headers
+  async headers() {
+    return [
+      {
+        source: "/(.*)",
+        headers: [
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "X-XSS-Protection", value: "1; mode=block" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          {
+            key: "Permissions-Policy",
+            value: "camera=(), microphone=(), geolocation=()",
+          },
+        ],
+      },
+    ];
   },
 };
 
