@@ -1,18 +1,17 @@
+// ─────────────────────────────────────────────────────────────
+// PRODUCTION SCHEMA — Vercel Postgres (PostgreSQL)
+// To use: copy this file contents into prisma/schema.prisma
+//         before deploying to Vercel.
+// ─────────────────────────────────────────────────────────────
+
 generator client {
   provider = "prisma-client-js"
 }
 
-// ─────────────────────────────────────────────────────────────
-// LOCAL DEV  →  provider = "sqlite",      url = "file:./dev.db"
-// PRODUCTION  →  provider = "postgresql", url = env("DATABASE_URL")
-//
-// Vercel auto-provides POSTGRES_PRISMA_URL (pooled) and
-// POSTGRES_URL_NON_POOLING.  Set DATABASE_URL to POSTGRES_PRISMA_URL
-// in your Vercel project's Environment Variables.
-// ─────────────────────────────────────────────────────────────
 datasource db {
-  provider = "sqlite"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("POSTGRES_PRISMA_URL")
+  directUrl = env("POSTGRES_URL_NON_POOLING")
 }
 
 model User {
