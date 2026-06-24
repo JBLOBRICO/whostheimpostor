@@ -48,14 +48,12 @@ export async function startGame(roomId: string) {
         activeTwist: setup.activeTwist?.type ?? null,
         twistData: JSON.stringify(setup.twistData),
         dailyEventId: dailyEvent?.id ?? null,
-        discussionStartedAt: null,
         players: {
           create: setup.assignments.map((a) => ({
             userId: a.userId,
             role: a.role,
             wordShown: a.wordShown ?? null,
             ability: a.ability ?? null,
-            twistSpecific: JSON.stringify(a.twistSpecific ?? {}),
           })),
         },
       },
@@ -105,7 +103,11 @@ export async function startVoting(gameId: string) {
   });
 
   if (!game) return { error: "Game not found" };
-  if (game.room.hostId !== session.user.id && game.status !== "discussion") {
+
+  // Allow host always, or allow auto-advance when discussion time expires
+  const isHost = game.room.hostId === session.user.id;
+  const isDiscussing = game.status === "discussion";
+  if (!isHost && !isDiscussing) {
     return { error: "Cannot start voting now" };
   }
 
@@ -168,10 +170,6 @@ export async function castVote(gameId: string, targetUserId: string | null) {
   }
 
   // Update room timestamp
-  await db.game.update({
-    where: { id: gameId },
-    data: {},
-  });
   await db.room.update({
     where: { id: game.roomId },
     data: { updatedAt: new Date() },

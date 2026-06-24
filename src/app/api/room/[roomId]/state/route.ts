@@ -24,7 +24,6 @@ export async function GET(
           orderBy: { joinedAt: "asc" },
         },
         games: {
-          where: { id: { not: undefined } },
           orderBy: { startedAt: "desc" },
           take: 1,
           include: {
