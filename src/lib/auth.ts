@@ -9,11 +9,19 @@ const loginSchema = z.object({
   password: z.string().min(6),
 });
 
+// next-auth v5 beta reads AUTH_SECRET automatically from env.
+// We also support NEXTAUTH_SECRET for backwards compatibility.
+const secret =
+  process.env.AUTH_SECRET ||
+  process.env.NEXTAUTH_SECRET ||
+  "fallback-dev-secret-change-in-production";
+
 export const { handlers, signIn, signOut, auth } = NextAuth({
-  secret: process.env.AUTH_SECRET ?? process.env.NEXTAUTH_SECRET,
+  secret,
   trustHost: true,
   session: {
     strategy: "jwt",
+    maxAge: 30 * 24 * 60 * 60, // 30 days
   },
   pages: {
     signIn: "/login",
@@ -62,32 +70,37 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         password: { label: "Password", type: "password" },
       },
       async authorize(credentials) {
-        const parsed = loginSchema.safeParse(credentials);
-        if (!parsed.success) return null;
+        try {
+          const parsed = loginSchema.safeParse(credentials);
+          if (!parsed.success) return null;
 
-        const { email, password } = parsed.data;
+          const { email, password } = parsed.data;
 
-        const user = await db.user.findUnique({ where: { email } });
-        if (!user || !user.password) return null;
+          const user = await db.user.findUnique({ where: { email } });
+          if (!user || !user.password) return null;
 
-        const isValid = await bcrypt.compare(password, user.password);
-        if (!isValid) return null;
+          const isValid = await bcrypt.compare(password, user.password);
+          if (!isValid) return null;
 
-        return {
-          id: user.id,
-          email: user.email,
-          name: user.displayName,
-          username: user.username,
-          displayName: user.displayName,
-          level: user.level,
-          xp: user.xp,
-          coins: user.coins,
-          equippedAvatar: user.equippedAvatar,
-          equippedBorder: user.equippedBorder,
-          equippedTitle: user.equippedTitle,
-          equippedEmote: user.equippedEmote,
-          equippedVoteEffect: user.equippedVoteEffect,
-        };
+          return {
+            id: user.id,
+            email: user.email,
+            name: user.displayName,
+            username: user.username,
+            displayName: user.displayName,
+            level: user.level,
+            xp: user.xp,
+            coins: user.coins,
+            equippedAvatar: user.equippedAvatar,
+            equippedBorder: user.equippedBorder,
+            equippedTitle: user.equippedTitle,
+            equippedEmote: user.equippedEmote,
+            equippedVoteEffect: user.equippedVoteEffect,
+          };
+        } catch (err) {
+          console.error("Auth error:", err);
+          return null;
+        }
       },
     }),
   ],
