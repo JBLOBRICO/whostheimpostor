@@ -4,21 +4,12 @@ import { WORD_DATABASE } from "@/lib/game-data/words";
 import { ACHIEVEMENTS } from "@/lib/game-data/achievements";
 import { AVATARS, BORDERS, TITLES, EMOTES, VOTE_EFFECTS } from "@/lib/game-data/cosmetics";
 
-// One-time seed endpoint — protected by a secret token
-// Call: POST /api/seed with header Authorization: Bearer <SEED_SECRET>
-// Set SEED_SECRET in Vercel env vars (any random string)
+// Seed endpoint — two ways to call:
+// 1. Browser (GET): https://your-app.vercel.app/api/seed?secret=YOUR_SEED_SECRET
+// 2. curl (POST):   curl -X POST https://your-app.vercel.app/api/seed -H "Authorization: Bearer YOUR_SEED_SECRET"
+// If SEED_SECRET env var is not set, the endpoint runs freely (set it for security).
 
-export async function POST(req: NextRequest) {
-  const auth = req.headers.get("authorization");
-  const secret = process.env.SEED_SECRET;
-
-  // In production, require a seed secret. In dev, allow freely.
-  if (process.env.NODE_ENV === "production") {
-    if (!secret || auth !== `Bearer ${secret}`) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-  }
-
+async function runSeed() {
   try {
     // Words
     let wordCount = 0;
@@ -54,7 +45,16 @@ export async function POST(req: NextRequest) {
     for (const c of allCosmetics) {
       await db.cosmetic.upsert({
         where: { key: c.key },
-        create: { key: c.key, name: c.name, description: c.description, type: c.type, rarity: c.rarity, coinCost: c.coinCost, levelRequired: c.levelRequired, preview: c.preview },
+        create: {
+          key: c.key,
+          name: c.name,
+          description: c.description,
+          type: c.type,
+          rarity: c.rarity,
+          coinCost: c.coinCost,
+          levelRequired: c.levelRequired,
+          preview: c.preview,
+        },
         update: { name: c.name, coinCost: c.coinCost, levelRequired: c.levelRequired },
       });
       cosmeticCount++;
@@ -77,7 +77,14 @@ export async function POST(req: NextRequest) {
     const today = new Date().toISOString().slice(0, 10);
     await db.dailyEvent.upsert({
       where: { date: today },
-      create: { date: today, eventType: "double_xp", name: "Double XP Day! ⚡", description: "Earn 2x XP from all matches today!", multiplier: 2.0, active: true },
+      create: {
+        date: today,
+        eventType: "double_xp",
+        name: "Double XP Day! ⚡",
+        description: "Earn 2x XP from all matches today!",
+        multiplier: 2.0,
+        active: true,
+      },
       update: {},
     });
 
@@ -96,10 +103,42 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      seeded: { words: wordCount, achievements: achCount, cosmetics: cosmeticCount, missions: missions.length },
+      message: "Database seeded successfully!",
+      seeded: {
+        words: wordCount,
+        achievements: achCount,
+        cosmetics: cosmeticCount,
+        missions: missions.length,
+      },
     });
   } catch (err) {
     console.error("Seed error:", err);
     return NextResponse.json({ error: "Seed failed", detail: String(err) }, { status: 500 });
   }
+}
+
+function isAuthorized(req: NextRequest): boolean {
+  const secret = process.env.SEED_SECRET;
+  if (!secret) return true; // No secret set = open (set SEED_SECRET in Vercel for security)
+
+  const authHeader = req.headers.get("authorization");
+  const querySecret = req.nextUrl.searchParams.get("secret");
+
+  return authHeader === `Bearer ${secret}` || querySecret === secret;
+}
+
+// GET: open in browser → https://whostheimpostor.vercel.app/api/seed?secret=YOUR_SECRET
+export async function GET(req: NextRequest) {
+  if (!isAuthorized(req)) {
+    return NextResponse.json({ error: "Unauthorized. Add ?secret=YOUR_SEED_SECRET to the URL." }, { status: 401 });
+  }
+  return runSeed();
+}
+
+// POST: curl -X POST https://whostheimpostor.vercel.app/api/seed -H "Authorization: Bearer YOUR_SECRET"
+export async function POST(req: NextRequest) {
+  if (!isAuthorized(req)) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  return runSeed();
 }
