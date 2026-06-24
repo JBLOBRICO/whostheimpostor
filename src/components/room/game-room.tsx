@@ -15,10 +15,11 @@ interface GameRoomProps {
   currentUserId: string;
 }
 
-const POLL_INTERVAL_MS = 2000;
-const MESSAGE_POLL_INTERVAL_MS = 1500;
+const POLL_INTERVAL_LOBBY = 2500;
+const POLL_INTERVAL_ACTIVE = 1800;
+const MSG_POLL_INTERVAL = 1500;
 
-export function GameRoom({ roomId, roomCode, currentUserId }: GameRoomProps) {
+export function GameRoom({ roomId, currentUserId }: GameRoomProps) {
   const {
     roomState,
     setRoomState,
@@ -34,61 +35,72 @@ export function GameRoom({ roomId, roomCode, currentUserId }: GameRoomProps) {
   const pollTimerRef = useRef<NodeJS.Timeout | null>(null);
   const msgPollTimerRef = useRef<NodeJS.Timeout | null>(null);
   const isMountedRef = useRef(true);
+  const seenMessageIdsRef = useRef<Set<string>>(new Set());
+  // Track last timestamp as ref to avoid stale closure in poll
+  const lastMsgTsRef = useRef<number>(0);
+
+  // Keep ref in sync
+  useEffect(() => {
+    lastMsgTsRef.current = lastMessageTimestamp;
+  }, [lastMessageTimestamp]);
 
   const pollRoomState = useCallback(async () => {
     try {
-      const res = await fetch(`/api/room/${roomId}/state`, {
-        cache: "no-store",
-        headers: { "Cache-Control": "no-cache" },
-      });
-      if (!res.ok) return;
+      const res = await fetch(`/api/room/${roomId}/state`, { cache: "no-store" });
+      if (!res.ok || !isMountedRef.current) return;
       const data = await res.json();
-      if (isMountedRef.current && data.roomState) {
-        setRoomState(data.roomState);
-      }
+      if (data.roomState) setRoomState(data.roomState);
     } catch {
-      // silently handle network errors
+      // network error — silently retry
     }
   }, [roomId, setRoomState]);
 
   const pollMessages = useCallback(async () => {
     try {
-      const url = `/api/room/${roomId}/messages${
-        lastMessageTimestamp ? `?since=${lastMessageTimestamp}` : ""
-      }`;
+      const ts = lastMsgTsRef.current;
+      const url = ts
+        ? `/api/room/${roomId}/messages?since=${ts}`
+        : `/api/room/${roomId}/messages`;
+
       const res = await fetch(url, { cache: "no-store" });
-      if (!res.ok) return;
+      if (!res.ok || !isMountedRef.current) return;
+
       const data = await res.json();
-      if (isMountedRef.current && data.messages?.length > 0) {
-        const msgs = data.messages as ChatMessage[];
-        msgs.forEach((m) => addMessage(m));
-        setLastMessageTimestamp(msgs[msgs.length - 1].createdAt);
+      const newMsgs: ChatMessage[] = (data.messages ?? []).filter(
+        (m: ChatMessage) => !seenMessageIdsRef.current.has(m.id)
+      );
+
+      if (newMsgs.length > 0) {
+        newMsgs.forEach((m) => {
+          seenMessageIdsRef.current.add(m.id);
+          addMessage(m);
+        });
+        setLastMessageTimestamp(newMsgs[newMsgs.length - 1].createdAt);
       }
     } catch {
       // silently handle
     }
-  }, [roomId, lastMessageTimestamp, addMessage, setLastMessageTimestamp]);
+  }, [roomId, addMessage, setLastMessageTimestamp]);
 
-  // Load initial messages
+  // Initial load — fetch all messages once
   useEffect(() => {
+    isMountedRef.current = true;
+
     fetch(`/api/room/${roomId}/messages`)
       .then((r) => r.json())
       .then((data) => {
-        if (data.messages?.length > 0) {
-          setMessages(data.messages);
-          setLastMessageTimestamp(data.messages[data.messages.length - 1].createdAt);
+        if (!isMountedRef.current) return;
+        const msgs: ChatMessage[] = data.messages ?? [];
+        msgs.forEach((m) => seenMessageIdsRef.current.add(m.id));
+        setMessages(msgs);
+        if (msgs.length > 0) {
+          setLastMessageTimestamp(msgs[msgs.length - 1].createdAt);
         }
       })
       .catch(() => {});
-  }, [roomId, setMessages, setLastMessageTimestamp]);
 
-  // Start polling
-  useEffect(() => {
-    isMountedRef.current = true;
+    // Initial state fetch
     pollRoomState();
-
-    pollTimerRef.current = setInterval(pollRoomState, POLL_INTERVAL_MS);
-    msgPollTimerRef.current = setInterval(pollMessages, MESSAGE_POLL_INTERVAL_MS);
 
     return () => {
       isMountedRef.current = false;
@@ -96,26 +108,35 @@ export function GameRoom({ roomId, roomCode, currentUserId }: GameRoomProps) {
       if (msgPollTimerRef.current) clearInterval(msgPollTimerRef.current);
       reset();
     };
-  }, [pollRoomState, pollMessages, reset]);
+  }, [roomId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Adjust poll rate based on game phase
+  // Start/restart polling — adjust speed based on game phase
   useEffect(() => {
-    const status = roomState?.currentGame?.status;
-    const interval = status === "voting" || status === "discussion" ? 1500 : POLL_INTERVAL_MS;
-
     if (pollTimerRef.current) clearInterval(pollTimerRef.current);
-    pollTimerRef.current = setInterval(pollRoomState, interval);
-  }, [roomState?.currentGame?.status, pollRoomState]);
+    if (msgPollTimerRef.current) clearInterval(msgPollTimerRef.current);
+
+    const status = roomState?.currentGame?.status;
+    const isActive = status === "discussion" || status === "voting";
+    const stateInterval = isActive ? POLL_INTERVAL_ACTIVE : POLL_INTERVAL_LOBBY;
+
+    pollTimerRef.current = setInterval(pollRoomState, stateInterval);
+    msgPollTimerRef.current = setInterval(pollMessages, MSG_POLL_INTERVAL);
+
+    return () => {
+      if (pollTimerRef.current) clearInterval(pollTimerRef.current);
+      if (msgPollTimerRef.current) clearInterval(msgPollTimerRef.current);
+    };
+  }, [roomState?.currentGame?.status, pollRoomState, pollMessages]);
 
   if (!roomState) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
+      <div className="min-h-screen flex items-center justify-center gap-3">
         <motion.div
           animate={{ rotate: 360 }}
           transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-          className="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full"
+          className="w-7 h-7 border-2 border-purple-500 border-t-transparent rounded-full"
         />
-        <span className="ml-3 text-white/60">Loading room...</span>
+        <span className="text-white/50 text-sm">Connecting to room...</span>
       </div>
     );
   }
@@ -128,12 +149,7 @@ export function GameRoom({ roomId, roomCode, currentUserId }: GameRoomProps) {
     <div className="min-h-screen">
       <AnimatePresence mode="wait">
         {!isInGame ? (
-          <motion.div
-            key="lobby"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-          >
+          <motion.div key="lobby" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
             <RoomLobby
               roomState={roomState}
               currentUserId={currentUserId}
@@ -142,12 +158,7 @@ export function GameRoom({ roomId, roomCode, currentUserId }: GameRoomProps) {
             />
           </motion.div>
         ) : isRevealing ? (
-          <motion.div
-            key="reveal"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-          >
+          <motion.div key="reveal" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
             <GameReveal
               roomState={roomState}
               currentUserId={currentUserId}
@@ -155,12 +166,7 @@ export function GameRoom({ roomId, roomCode, currentUserId }: GameRoomProps) {
             />
           </motion.div>
         ) : (
-          <motion.div
-            key="game"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-          >
+          <motion.div key="game" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
             <GamePhase
               roomState={roomState}
               currentUserId={currentUserId}
@@ -171,7 +177,6 @@ export function GameRoom({ roomId, roomCode, currentUserId }: GameRoomProps) {
         )}
       </AnimatePresence>
 
-      {/* Twist reveal overlay */}
       <TwistRevealOverlay
         twist={roomState.currentGame?.activeTwist ?? null}
         visible={showTwistReveal}
