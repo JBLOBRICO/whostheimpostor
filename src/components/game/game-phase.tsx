@@ -38,6 +38,8 @@ export function GamePhase({ roomState, currentUserId, messages, roomId }: GamePh
   const myPlayer = game.players.find((p) => p.userId === currentUserId);
   const myAbility = myPlayer?.ability ? ALL_ABILITIES[myPlayer.ability] : null;
   const activePlayers = game.players.filter((p) => !p.isEliminated);
+  // FIX: declare maxTime early so useEffect dependency array can reference it
+  const maxTime = status === "discussion" ? game.discussionTimeLimit : game.votingTimeLimit;
 
   // Reset vote state when phase changes to voting
   useEffect(() => {
@@ -89,13 +91,15 @@ export function GamePhase({ roomState, currentUserId, messages, roomId }: GamePh
   }, [status, game.discussionStartedAt, game.votingStartedAt, game.discussionTimeLimit, game.votingTimeLimit]);
 
   // Auto-advance discussion → voting when timer hits 0 (host only, fire once)
+  // FIX: guard with maxTime > 0 so it doesn't fire on initial mount before timer starts
   useEffect(() => {
     if (!isHost || timeLeft !== 0 || autoAdvancedRef.current) return;
+    if (maxTime === 0) return; // timer not started yet
     if (status === "discussion") {
       autoAdvancedRef.current = true;
       startVoting(game.id).catch(() => { autoAdvancedRef.current = false; });
     }
-  }, [timeLeft, isHost, status, game.id]);
+  }, [timeLeft, isHost, status, game.id, maxTime]);
 
   async function handleStartDiscussion() {
     const result = await startDiscussion(game.id);
@@ -136,9 +140,10 @@ export function GamePhase({ roomState, currentUserId, messages, roomId }: GamePh
     }
   }
 
-  const maxTime = status === "discussion" ? game.discussionTimeLimit : game.votingTimeLimit;
+  // maxTime declared earlier — use it here for derived values
   const timePct = maxTime > 0 ? Math.max(0, Math.min(100, (timeLeft / maxTime) * 100)) : 0;
   const timerColor = timePct > 50 ? "bg-green-500" : timePct > 20 ? "bg-yellow-500" : "bg-red-500";
+  const isEliminated = myPlayer?.isEliminated ?? false;
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -175,10 +180,11 @@ export function GamePhase({ roomState, currentUserId, messages, roomId }: GamePh
         {(status === "discussion" || status === "voting") && (
           <div className="max-w-6xl mx-auto mt-2">
             <div className="h-1 bg-white/10 rounded-full overflow-hidden">
+              {/* FIX: use animate prop so framer-motion actually transitions the width */}
               <motion.div
                 className={`h-full rounded-full ${timerColor}`}
-                style={{ width: `${timePct}%` }}
-                transition={{ duration: 0.5 }}
+                animate={{ width: `${timePct}%` }}
+                transition={{ duration: 0.8, ease: "linear" }}
               />
             </div>
           </div>
@@ -270,11 +276,12 @@ export function GamePhase({ roomState, currentUserId, messages, roomId }: GamePh
               </div>
 
               {/* Ability */}
-              {myAbility && !myPlayer?.abilityUsed && (
+              {myAbility && (
                 <AbilityCard
                   ability={myAbility}
                   players={activePlayers.filter((p) => p.userId !== currentUserId)}
                   onUse={handleUseAbility}
+                  alreadyUsed={myPlayer?.abilityUsed ?? false}
                 />
               )}
 
@@ -290,6 +297,14 @@ export function GamePhase({ roomState, currentUserId, messages, roomId }: GamePh
           {/* ── VOTING ── */}
           {status === "voting" && (
             <div className="space-y-4">
+              {/* FIX: show eliminated banner instead of vote UI */}
+              {isEliminated ? (
+                <div className="glass-card p-8 text-center">
+                  <div className="text-5xl mb-3">☠️</div>
+                  <h2 className="text-2xl font-bold text-red-400 mb-2">You were eliminated!</h2>
+                  <p className="text-white/50">Watch the others vote...</p>
+                </div>
+              ) : (
               <div className="glass-card p-5">
                 <h2 className="font-bold text-white text-xl mb-1 flex items-center gap-2">
                   <Vote className="w-5 h-5 text-red-400" />
@@ -329,12 +344,14 @@ export function GamePhase({ roomState, currentUserId, messages, roomId }: GamePh
                   </Button>
                 )}
               </div>
+              )}
 
-              {myAbility && !myPlayer?.abilityUsed && (
+              {myAbility && (
                 <AbilityCard
                   ability={myAbility}
                   players={activePlayers.filter((p) => p.userId !== currentUserId)}
                   onUse={handleUseAbility}
+                  alreadyUsed={myPlayer?.abilityUsed ?? false}
                 />
               )}
             </div>
@@ -347,6 +364,8 @@ export function GamePhase({ roomState, currentUserId, messages, roomId }: GamePh
             messages={messages}
             roomId={roomId}
             currentUserId={currentUserId}
+            currentUserAvatar={myPlayer?.avatar ?? "default"}
+            currentUserName={myPlayer?.displayName ?? "You"}
             silentRound={silentRound && status === "discussion"}
             className="h-full"
           />

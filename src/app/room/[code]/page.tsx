@@ -13,27 +13,35 @@ export default async function RoomPage({ params }: RoomPageProps) {
 
   const { code } = await params;
 
+  // FIX: use _count for accurate player count, don't filter by userId
   const room = await db.room.findUnique({
     where: { code: code.toUpperCase() },
     include: {
-      players: {
-        where: { userId: session.user.id },
-      },
+      _count: { select: { players: true } },
     },
   });
 
   if (!room) redirect("/dashboard");
 
-  // Auto-join if not already in room
-  if (room.players.length === 0) {
-    if (room.status !== "lobby") redirect("/dashboard");
-    if (room.players.length >= room.maxPlayers) redirect("/dashboard");
+  // Check if already in room
+  const existingPlayer = await db.roomPlayer.findUnique({
+    where: { roomId_userId: { roomId: room.id, userId: session.user.id } },
+  });
 
-    await db.roomPlayer.upsert({
-      where: { roomId_userId: { roomId: room.id, userId: session.user.id } },
-      create: { roomId: room.id, userId: session.user.id, isHost: false, isReady: false },
-      update: {},
+  if (!existingPlayer) {
+    // Room not joinable during active game
+    if (room.status !== "lobby") redirect("/dashboard");
+
+    // FIX: use accurate count for capacity check
+    if (room._count.players >= room.maxPlayers) redirect("/dashboard");
+
+    // Leave any other rooms first
+    await db.roomPlayer.deleteMany({ where: { userId: session.user.id } });
+
+    await db.roomPlayer.create({
+      data: { roomId: room.id, userId: session.user.id, isHost: false, isReady: false },
     });
+
     await db.room.update({ where: { id: room.id }, data: { updatedAt: new Date() } });
   }
 

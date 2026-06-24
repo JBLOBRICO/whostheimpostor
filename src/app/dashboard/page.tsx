@@ -2,6 +2,7 @@ import { auth } from "@/lib/auth";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { DashboardClient } from "@/components/dashboard/dashboard-client";
+import { calculateLevelFromXP } from "@/lib/utils";
 
 export default async function DashboardPage() {
   const session = await auth();
@@ -16,7 +17,9 @@ export default async function DashboardPage() {
 
   if (!user) redirect("/login");
 
-  // Get today's daily event
+  // FIX: compute XP-in-level server-side using the correct formula
+  const { xpInLevel, xpForNext } = calculateLevelFromXP(user.xp);
+
   const today = new Date().toISOString().slice(0, 10);
   const dailyEvent = await db.dailyEvent.findUnique({ where: { date: today } });
 
@@ -28,6 +31,8 @@ export default async function DashboardPage() {
         username: user.username,
         level: user.level,
         xp: user.xp,
+        xpInLevel,
+        xpForNext,
         coins: user.coins,
         equippedAvatar: user.equippedAvatar,
         equippedBorder: user.equippedBorder,

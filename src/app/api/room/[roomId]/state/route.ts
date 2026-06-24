@@ -75,6 +75,8 @@ export async function GET(
 
         // Count votes received
         const votesReceived = currentGame.votes.filter((v) => v.targetId === gp.id).length;
+        const isVoting = currentGame.status === "voting";
+        const showVoteCount = isReveal || (isVoting && !room.anonymousVoting);
 
         return {
           id: gp.id,
@@ -83,17 +85,21 @@ export async function GET(
           avatar: gp.user.equippedAvatar,
           border: gp.user.equippedBorder,
           title: gp.user.equippedTitle,
-          // Only reveal role/word to the player themselves, or on reveal phase
           role: isMe || isReveal ? (gp.role as "innocent" | "impostor" | "double_agent") : undefined,
           wordShown: isMe ? gp.wordShown ?? undefined : undefined,
-          ability: isMe ? (gp.ability as "reveal_category" | "skip_vote" | "double_vote" | "force_first" | "protect_self" | "cancel_ability" | "swap_votes" | "freeze_timer" | "trigger_revote" | "view_word_category" | "force_random_first" | undefined) : undefined,
+          // FIX: hide double_vote from client (it activates automatically)
+          ability: isMe && gp.ability !== "double_vote"
+            ? (gp.ability as "reveal_category" | "skip_vote" | "force_first" | "protect_self" | "cancel_ability" | "swap_votes" | "freeze_timer" | "trigger_revote" | "view_word_category" | "force_random_first" | undefined)
+            : undefined,
           abilityUsed: gp.abilityUsed,
           isEliminated: gp.isEliminated,
           speakingOrder: gp.speakingOrder ?? undefined,
-          hasVoted: isHost || isReveal
+          // FIX: show hasVoted to the player themselves so reconnect works correctly
+          hasVoted: (isMe || isHost || isReveal)
             ? currentGame.votes.some((v) => v.casterId === gp.id)
             : undefined,
-          votesReceived: isReveal ? votesReceived : undefined,
+          // FIX: show live vote counts during voting in non-anonymous rooms
+          votesReceived: showVoteCount ? votesReceived : undefined,
         };
       });
 

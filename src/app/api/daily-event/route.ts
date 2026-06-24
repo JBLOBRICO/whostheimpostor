@@ -47,9 +47,14 @@ export async function GET() {
     let event = await db.dailyEvent.findUnique({ where: { date: today } });
 
     if (!event) {
-      // Generate today's event based on date seed
-      const dateSeed = today.split("-").join("").slice(-3);
-      const idx = parseInt(dateSeed) % EVENT_TYPES.length;
+      // FIX: use full date string as numeric seed for better distribution
+      const parts = today.split("-");
+      const year = parseInt(parts[0]);
+      const month = parseInt(parts[1]);
+      const day = parseInt(parts[2]);
+      // A simple hash that changes every day and avoids collisions
+      const seed = (year * 366 + (month - 1) * 31 + day);
+      const idx = seed % EVENT_TYPES.length;
       const eventDef = EVENT_TYPES[idx];
 
       event = await db.dailyEvent.create({

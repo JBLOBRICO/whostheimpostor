@@ -20,11 +20,18 @@ export async function GET(
   const { roomId } = await params;
   const since = request.nextUrl.searchParams.get("since");
 
+  // FIX: since param validation
+  let sinceDate: Date | undefined;
+  if (since) {
+    const ts = parseInt(since, 10);
+    if (!isNaN(ts) && ts > 0) sinceDate = new Date(ts);
+  }
+
   try {
     const messages = await db.message.findMany({
       where: {
         roomId,
-        ...(since ? { createdAt: { gt: new Date(parseInt(since)) } } : {}),
+        ...(sinceDate ? { createdAt: { gt: sinceDate } } : {}),
       },
       include: { user: true },
       orderBy: { createdAt: "asc" },
@@ -105,9 +112,10 @@ export async function POST(
       }
 
       if (game?.activeTwist === "silent_round" && game.status === "discussion") {
-        if (parsed.data.type === "text") {
+        // Block both text AND quick_chat during silent rounds
+        if (parsed.data.type === "text" || parsed.data.type === "quick_chat") {
           return NextResponse.json(
-            { error: "Silent Round — only emojis allowed!" },
+            { error: "Silent Round — emojis only!" },
             { status: 403 }
           );
         }

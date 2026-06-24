@@ -12,13 +12,16 @@ export async function startGame(roomId: string) {
 
   const room = await db.room.findUnique({
     where: { id: roomId },
-    include: { players: { include: { user: true } } },
+    include: {
+      players: { include: { user: true } },
+      _count: { select: { players: true } },
+    },
   });
 
   if (!room) return { error: "Room not found" };
   if (room.hostId !== session.user.id) return { error: "Only the host can start the game" };
-  if (room.status !== "lobby") return { error: "Game already started" };
-  if (room.players.length < 4) return { error: "Need at least 4 players to start" };
+  if (room.status !== "lobby") return { error: "Game already in progress" };
+  if (room._count.players < 4) return { error: "Need at least 4 players to start" };
 
   const playerIds = room.players.map((p) => p.userId);
   const enabledTwists = room.enabledTwists
@@ -33,7 +36,6 @@ export async function startGame(roomId: string) {
     enabledTwists?.length ? enabledTwists : undefined
   );
 
-  // Get today's daily event
   const today = new Date().toISOString().slice(0, 10);
   const dailyEvent = await db.dailyEvent.findUnique({ where: { date: today } });
 
@@ -47,7 +49,7 @@ export async function startGame(roomId: string) {
         category: setup.category,
         activeTwist: setup.activeTwist?.type ?? null,
         twistData: JSON.stringify(setup.twistData),
-        dailyEventId: dailyEvent?.id ?? null,
+        ...(dailyEvent ? { dailyEventId: dailyEvent.id } : {}),
         players: {
           create: setup.assignments.map((a) => ({
             userId: a.userId,
@@ -81,7 +83,8 @@ export async function startDiscussion(gameId: string) {
   });
 
   if (!game) return { error: "Game not found" };
-  if (game.room.hostId !== session.user.id) return { error: "Only host can advance phases" };
+  if (game.room.hostId !== session.user.id) return { error: "Only the host can start discussion" };
+  if (game.status !== "assigning") return { error: "Cannot start discussion now" };
 
   await db.game.update({
     where: { id: gameId },
@@ -89,7 +92,6 @@ export async function startDiscussion(gameId: string) {
   });
 
   await db.room.update({ where: { id: game.roomId }, data: { updatedAt: new Date() } });
-
   return { success: true };
 }
 
@@ -104,12 +106,11 @@ export async function startVoting(gameId: string) {
 
   if (!game) return { error: "Game not found" };
 
-  // Allow host always, or allow auto-advance when discussion time expires
-  const isHost = game.room.hostId === session.user.id;
-  const isDiscussing = game.status === "discussion";
-  if (!isHost && !isDiscussing) {
-    return { error: "Cannot start voting now" };
+  // FIX: only host can manually advance to voting
+  if (game.room.hostId !== session.user.id) {
+    return { error: "Only the host can start voting" };
   }
+  if (game.status !== "discussion") return { error: "Cannot start voting now" };
 
   await db.game.update({
     where: { id: gameId },
@@ -117,7 +118,6 @@ export async function startVoting(gameId: string) {
   });
 
   await db.room.update({ where: { id: game.roomId }, data: { updatedAt: new Date() } });
-
   return { success: true };
 }
 
@@ -127,7 +127,7 @@ export async function castVote(gameId: string, targetUserId: string | null) {
 
   const game = await db.game.findUnique({
     where: { id: gameId },
-    include: { players: true },
+    include: { players: true, room: true },
   });
 
   if (!game || game.status !== "voting") return { error: "Voting is not active" };
@@ -136,30 +136,25 @@ export async function castVote(gameId: string, targetUserId: string | null) {
   if (!caster) return { error: "You are not in this game" };
   if (caster.isEliminated) return { error: "Eliminated players cannot vote" };
 
-  // Check if already voted
   const existingVote = await db.vote.findFirst({
     where: { gameId, casterId: caster.id },
   });
   if (existingVote) return { error: "You have already voted" };
 
-  // Get target gamePlayer
   let targetGamePlayerId: string | null = null;
   if (targetUserId) {
     const targetPlayer = game.players.find((p) => p.userId === targetUserId);
     if (!targetPlayer) return { error: "Target player not found" };
+    if (targetPlayer.isEliminated) return { error: "Cannot vote for an eliminated player" };
     targetGamePlayerId = targetPlayer.id;
   }
 
-  // Check ability: double_vote
+  // FIX: double_vote is auto-applied implicitly — don't show it in AbilityCard
+  // The ability is consumed here, not via useAbility
   const isDouble = caster.ability === "double_vote" && !caster.abilityUsed;
 
   await db.vote.create({
-    data: {
-      gameId,
-      casterId: caster.id,
-      targetId: targetGamePlayerId,
-      isDouble,
-    },
+    data: { gameId, casterId: caster.id, targetId: targetGamePlayerId, isDouble },
   });
 
   if (isDouble) {
@@ -169,25 +164,28 @@ export async function castVote(gameId: string, targetUserId: string | null) {
     });
   }
 
-  // Update room timestamp
   await db.room.update({
     where: { id: game.roomId },
     data: { updatedAt: new Date() },
   });
 
-  // Check if all players have voted
+  // FIX: count weighted votes to decide if everyone has voted
+  const allVotes = await db.vote.findMany({ where: { gameId } });
   const activePlayers = game.players.filter((p) => !p.isEliminated);
-  const votes = await db.vote.findMany({ where: { gameId } });
 
-  if (votes.length >= activePlayers.length) {
-    // Auto-reveal
-    await revealResults(gameId);
+  // Each active player must have cast exactly one vote row
+  const voterIds = new Set(allVotes.map((v) => v.casterId));
+  const allVoted = activePlayers.every((p) => voterIds.has(p.id));
+
+  if (allVoted) {
+    await _revealResults(gameId);
   }
 
   return { success: true };
 }
 
-export async function revealResults(gameId: string) {
+// Internal reveal — no auth needed (called by castVote)
+async function _revealResults(gameId: string) {
   const game = await db.game.findUnique({
     where: { id: gameId },
     include: {
@@ -197,8 +195,8 @@ export async function revealResults(gameId: string) {
     },
   });
 
-  if (!game) return { error: "Game not found" };
-  if (game.status === "revealing" || game.status === "finished") return { success: true };
+  if (!game) return;
+  if (game.status === "revealing" || game.status === "finished") return;
 
   const votes = game.votes.map((v) => ({
     casterId: v.casterId,
@@ -207,14 +205,12 @@ export async function revealResults(gameId: string) {
   }));
 
   const playerIds = game.players.map((p) => p.id);
-  const { eliminatedId, isTie, voteCounts } = calculateVotes(votes, playerIds);
+  const { eliminatedId } = calculateVotes(votes, playerIds);
 
-  // Find eliminated user
   const eliminatedPlayer = eliminatedId
     ? game.players.find((p) => p.id === eliminatedId)
     : null;
 
-  // Mark eliminated
   if (eliminatedPlayer) {
     await db.gamePlayer.update({
       where: { id: eliminatedPlayer.id },
@@ -222,37 +218,25 @@ export async function revealResults(gameId: string) {
     });
   }
 
-  // Check game outcome
   const impostors = game.players.filter(
     (p) => p.role === "impostor" || p.role === "double_agent"
   );
-  const impostorsCaught = eliminatedPlayer
-    ? impostors.some((i) => i.id === eliminatedPlayer.id)
-    : false;
 
+  // FIX: compute remaining counts correctly based on who just got eliminated
+  const eliminatedUserId = eliminatedPlayer?.userId;
   const remainingImpostors = impostors.filter(
-    (i) => i.id !== eliminatedPlayer?.id && !i.isEliminated
+    (i) => i.userId !== eliminatedUserId && !i.isEliminated
   );
   const remainingInnocents = game.players.filter(
-    (p) =>
-      p.role === "innocent" &&
-      p.id !== eliminatedPlayer?.id &&
-      !p.isEliminated
+    (p) => p.role === "innocent" && p.userId !== eliminatedUserId && !p.isEliminated
   );
 
-  const impostorsWin =
-    remainingImpostors.length >= remainingInnocents.length;
-  const outcome = impostorsCaught
-    ? "impostors_caught"
-    : impostorsWin
-    ? "impostors_win"
-    : "no_elimination";
+  const impostorsWin = remainingImpostors.length >= remainingInnocents.length;
 
-  // Calculate rewards
   const dailyEvent = game.dailyEventId
     ? await db.dailyEvent.findUnique({ where: { id: game.dailyEventId } })
     : null;
-  const multiplier = dailyEvent ? dailyEvent.multiplier : 1;
+  const multiplier = dailyEvent?.multiplier ?? 1;
 
   const playerRewards = calculateXPRewards(
     game.players.map((p) => ({
@@ -266,18 +250,19 @@ export async function revealResults(gameId: string) {
     multiplier
   );
 
-  // Update player stats and XP
   for (const reward of playerRewards) {
     const user = await db.user.findUnique({ where: { id: reward.userId } });
     if (!user) continue;
 
     const newXP = user.xp + reward.xp;
     const { level } = calculateLevelFromXP(newXP);
-
     const gp = game.players.find((p) => p.userId === reward.userId);
     const isImpostor = gp?.role === "impostor" || gp?.role === "double_agent";
-    const won =
-      (isImpostor && impostorsWin) || (!isImpostor && !impostorsWin);
+    const won = (isImpostor && impostorsWin) || (!isImpostor && !impostorsWin);
+    const madeCorrectGuess =
+      !isImpostor &&
+      eliminatedPlayer &&
+      impostors.some((i) => i.id === eliminatedPlayer.id);
 
     await db.user.update({
       where: { id: reward.userId },
@@ -286,13 +271,10 @@ export async function revealResults(gameId: string) {
         coins: { increment: reward.coins },
         level,
         totalGames: { increment: 1 },
-        gamesWon: won ? { increment: 1 } : undefined,
-        timesImpostor: isImpostor ? { increment: 1 } : undefined,
-        impostorWins: isImpostor && won ? { increment: 1 } : undefined,
-        correctGuesses:
-          !isImpostor && eliminatedPlayer && impostors.some((i) => i.id === eliminatedPlayer.id)
-            ? { increment: 1 }
-            : undefined,
+        ...(won ? { gamesWon: { increment: 1 } } : {}),
+        ...(isImpostor ? { timesImpostor: { increment: 1 } } : {}),
+        ...(isImpostor && won ? { impostorWins: { increment: 1 } } : {}),
+        ...(madeCorrectGuess ? { correctGuesses: { increment: 1 } } : {}),
       },
     });
 
@@ -302,21 +284,43 @@ export async function revealResults(gameId: string) {
     });
   }
 
-  // Update game status
+  // Clean up old messages (keep last 100)
+  const msgCount = await db.message.count({ where: { roomId: game.roomId } });
+  if (msgCount > 100) {
+    const oldest = await db.message.findMany({
+      where: { roomId: game.roomId },
+      orderBy: { createdAt: "asc" },
+      take: msgCount - 100,
+      select: { id: true },
+    });
+    await db.message.deleteMany({ where: { id: { in: oldest.map((m) => m.id) } } });
+  }
+
   await db.game.update({
     where: { id: gameId },
-    data: {
-      status: "revealing",
-      revealedAt: new Date(),
-    },
+    data: { status: "revealing", revealedAt: new Date() },
   });
 
   await db.room.update({
     where: { id: game.roomId },
     data: { updatedAt: new Date() },
   });
+}
 
-  return { success: true, outcome, eliminatedUserId: eliminatedPlayer?.userId };
+// FIX: revealResults is now auth-guarded (host-only public version)
+export async function revealResults(gameId: string) {
+  const session = await auth();
+  if (!session?.user?.id) return { error: "Not authenticated" };
+
+  const game = await db.game.findUnique({
+    where: { id: gameId },
+    include: { room: true },
+  });
+  if (!game) return { error: "Game not found" };
+  if (game.room.hostId !== session.user.id) return { error: "Only host can reveal results" };
+
+  await _revealResults(gameId);
+  return { success: true };
 }
 
 export async function finishGame(gameId: string) {
@@ -338,11 +342,7 @@ export async function finishGame(gameId: string) {
 
   await db.room.update({
     where: { id: game.roomId },
-    data: {
-      status: "lobby",
-      currentGameId: null,
-      updatedAt: new Date(),
-    },
+    data: { status: "lobby", currentGameId: null, updatedAt: new Date() },
   });
 
   return { success: true };
@@ -362,18 +362,23 @@ export async function useAbility(
   });
 
   if (!game) return { error: "Game not found" };
+  if (game.status !== "discussion" && game.status !== "voting") {
+    return { error: "Abilities can only be used during discussion or voting" };
+  }
 
   const caster = game.players.find((p) => p.userId === session.user.id);
   if (!caster) return { error: "Not in this game" };
   if (caster.abilityUsed) return { error: "Ability already used" };
   if (caster.ability !== abilityType) return { error: "You don't have this ability" };
 
+  // FIX: double_vote is handled automatically in castVote — block manual use
+  if (abilityType === "double_vote") {
+    return { error: "Double Vote activates automatically when you cast your vote" };
+  }
+
   await db.gamePlayer.update({
     where: { id: caster.id },
-    data: {
-      abilityUsed: true,
-      abilityTarget: targetUserId ?? null,
-    },
+    data: { abilityUsed: true, abilityTarget: targetUserId ?? null },
   });
 
   await db.room.update({

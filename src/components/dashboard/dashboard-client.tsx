@@ -11,7 +11,6 @@ import { JoinRoomModal } from "@/components/room/join-room-modal";
 import { PlayerAvatar } from "@/components/game/player-avatar";
 import { XPBar } from "@/components/game/xp-bar";
 import { DailyEvent } from "@/types/game";
-import { calculateXPForLevel } from "@/lib/utils";
 import { claimDailyReward } from "@/lib/actions/profile";
 import { useToast } from "@/hooks/use-toast";
 import { signOut } from "next-auth/react";
@@ -27,6 +26,8 @@ interface DashboardProps {
     username: string;
     level: number;
     xp: number;
+    xpInLevel: number;
+    xpForNext: number;
     coins: number;
     equippedAvatar: string;
     equippedBorder: string;
@@ -49,8 +50,8 @@ export function DashboardClient({ user, recentAchievements, dailyEvent }: Dashbo
   const [showJoin, setShowJoin] = useState(false);
   const [claimingReward, setClaimingReward] = useState(false);
 
-  const xpForNext = calculateXPForLevel(user.level);
-  const xpInLevel = user.xp % xpForNext;
+  const xpForNext = user.xpForNext;
+  const xpInLevel = user.xpInLevel;
   const canClaimReward = !user.lastDailyReward ||
     (Date.now() - new Date(user.lastDailyReward).getTime()) > 20 * 60 * 60 * 1000;
 

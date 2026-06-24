@@ -113,7 +113,7 @@ export function RoomLobby({ roomState, currentUserId, messages, roomId }: RoomLo
                   initial={{ opacity: 0, scale: 0.8 }}
                   animate={{ opacity: 1, scale: 1 }}
                   transition={{ delay: i * 0.05 }}
-                  className={`relative p-3 rounded-xl border transition-all ${
+                  className={`relative p-3 rounded-xl border transition-all group ${
                     player.isReady || player.isHost
                       ? "border-green-500/40 bg-green-500/10"
                       : "border-white/10 bg-white/5"
@@ -251,6 +251,8 @@ export function RoomLobby({ roomState, currentUserId, messages, roomId }: RoomLo
             messages={messages}
             roomId={roomId}
             currentUserId={currentUserId}
+            currentUserAvatar={currentPlayer?.avatar ?? "default"}
+            currentUserName={currentPlayer?.displayName ?? "You"}
             className="h-[350px]"
           />
         </div>

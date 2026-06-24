@@ -18,6 +18,8 @@ interface GameChatProps {
   messages: ChatMessage[];
   roomId: string;
   currentUserId: string;
+  currentUserAvatar?: string;
+  currentUserName?: string;
   silentRound?: boolean;
   className?: string;
 }
@@ -26,6 +28,8 @@ export function GameChat({
   messages,
   roomId,
   currentUserId,
+  currentUserAvatar = "default",
+  currentUserName = "You",
   silentRound = false,
   className,
 }: GameChatProps) {
@@ -60,13 +64,13 @@ export function GameChat({
       sendingRef.current = true;
       setSending(true);
 
-      // Optimistic update — show message immediately
+      // Optimistic update — show message immediately with real avatar
       const tempId = `temp-${Date.now()}`;
       const optimistic: ChatMessage = {
         id: tempId,
         userId: currentUserId,
-        displayName: "You",
-        avatar: "default",
+        displayName: currentUserName,
+        avatar: currentUserAvatar,
         content,
         type,
         createdAt: Date.now(),
